@@ -144,6 +144,50 @@ fully_fused_projection_bwd_tensor(
     const bool viewmats_requires_grad
 );
 
+torch::Tensor isect_tiles_part1_tensor(
+    const torch::Tensor &means2d,                    // [C, N, 2] or [nnz, 2]
+    const torch::Tensor &radii,                      // [C, N] or [nnz]
+    const torch::Tensor &depths,                     // [C, N] or [nnz]
+    const at::optional<torch::Tensor> &camera_ids,   // [nnz]
+    const at::optional<torch::Tensor> &gaussian_ids, // [nnz]
+    const uint32_t C,
+    const uint32_t tile_size,
+    const uint32_t tile_width,
+    const uint32_t tile_height,
+    const bool sort,
+    const bool double_buffer,
+    torch::Tensor &tiles_per_gauss
+);
+
+std::tuple<torch::Tensor, torch::Tensor> isect_tiles_part2_tensor(
+    const torch::Tensor &means2d,                    // [C, N, 2] or [nnz, 2]
+    const torch::Tensor &radii,                      // [C, N] or [nnz]
+    const torch::Tensor &depths,                     // [C, N] or [nnz]
+    const at::optional<torch::Tensor> &camera_ids,   // [nnz]
+    const at::optional<torch::Tensor> &gaussian_ids, // [nnz]
+    const uint32_t C,
+    const uint32_t tile_size,
+    const uint32_t tile_width,
+    const uint32_t tile_height,
+    const bool sort,
+    const bool double_buffer,
+    const torch::Tensor &cum_tiles_per_gauss,
+    torch::Tensor &isect_ids,
+    torch::Tensor &flatten_ids
+);
+
+std::tuple<torch::Tensor, torch::Tensor> isect_tiles_part3_tensor(
+    const torch::Tensor &isect_ids,
+    const torch::Tensor &flatten_ids,
+    const uint32_t C,
+    const uint32_t tile_size,
+    const uint32_t tile_width,
+    const uint32_t tile_height,
+    const uint32_t n_isects,
+    torch::Tensor &isect_ids_sorted,
+    torch::Tensor &flatten_ids_sorted
+);
+
 std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> isect_tiles_tensor(
     const torch::Tensor &means2d,                    // [C, N, 2] or [nnz, 2]
     const torch::Tensor &radii,                      // [C, N] or [nnz]

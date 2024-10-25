@@ -5,9 +5,12 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor
 
-from gsplat import quat_scale_to_covar_preci
-from gsplat.relocation import compute_relocation
-from gsplat.utils import normalized_quat_to_rotmat
+# from gsplat import quat_scale_to_covar_preci
+# from gsplat.relocation import compute_relocation
+# from gsplat.utils import normalized_quat_to_rotmat
+_quat_scale_to_covar_preci_cached = None
+_compute_relocation_cached = None
+_normalized_quat_to_rotmat_cached = None
 
 
 @torch.no_grad()
@@ -137,7 +140,11 @@ def split(
 
     scales = torch.exp(params["scales"][sel])
     quats = F.normalize(params["quats"][sel], dim=-1)
-    rotmats = normalized_quat_to_rotmat(quats)  # [N, 3, 3]
+    global _normalized_quat_to_rotmat_cached
+    if _normalized_quat_to_rotmat_cached is None:
+        from gsplat.utils import normalized_quat_to_rotmat
+        _normalized_quat_to_rotmat_cached = normalized_quat_to_rotmat
+    rotmats = _normalized_quat_to_rotmat_cached(quats)  # [N, 3, 3]
     samples = torch.einsum(
         "nij,nj,bnj->bni",
         rotmats,
@@ -200,7 +207,7 @@ def remove(
     _update_param_with_optimizer(param_fn, optimizer_fn, params, optimizers)
     # update the extra running state
     for k, v in state.items():
-        if isinstance(v, torch.Tensor):
+        if isinstance(v, torch.Tensor) and (v.shape[0] == list(params.values())[0].shape[0]) and (v.device == sel.device):
             state[k] = v[sel]
 
 
@@ -263,7 +270,11 @@ def relocate(
     probs = opacities[alive_indices].flatten()  # ensure its shape is [N,]
     sampled_idxs = _multinomial_sample(probs, n, replacement=True)
     sampled_idxs = alive_indices[sampled_idxs]
-    new_opacities, new_scales = compute_relocation(
+    global _compute_relocation_cached
+    if _compute_relocation_cached is None:
+        from gsplat.relocation import compute_relocation 
+        _compute_relocation_cached = compute_relocation
+    new_opacities, new_scales = _compute_relocation_cached(
         opacities=opacities[sampled_idxs],
         scales=torch.exp(params["scales"])[sampled_idxs],
         ratios=torch.bincount(sampled_idxs)[sampled_idxs] + 1,
@@ -305,7 +316,11 @@ def sample_add(
     eps = torch.finfo(torch.float32).eps
     probs = opacities.flatten()
     sampled_idxs = _multinomial_sample(probs, n, replacement=True)
-    new_opacities, new_scales = compute_relocation(
+    global _compute_relocation_cached
+    if _compute_relocation_cached is None:
+        from gsplat.relocation import compute_relocation
+        _compute_relocation_cached = compute_relocation
+    new_opacities, new_scales = _compute_relocation_cached(
         opacities=opacities[sampled_idxs],
         scales=torch.exp(params["scales"])[sampled_idxs],
         ratios=torch.bincount(sampled_idxs)[sampled_idxs] + 1,
@@ -343,7 +358,11 @@ def inject_noise_to_position(
 ):
     opacities = torch.sigmoid(params["opacities"].flatten())
     scales = torch.exp(params["scales"])
-    covars, _ = quat_scale_to_covar_preci(
+    global _quat_scale_to_covar_preci_cached
+    if _quat_scale_to_covar_preci_cached is None:
+        from gsplat import quat_scale_to_covar_preci
+        _quat_scale_to_covar_preci_cached = quat_scale_to_covar_preci
+    covars, _ = _quat_scale_to_covar_preci_cached(
         params["quats"],
         scales,
         compute_covar=True,

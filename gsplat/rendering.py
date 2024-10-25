@@ -51,6 +51,11 @@ def rasterization(
     distributed: bool = False,
     camera_model: Literal["pinhole", "ortho", "fisheye"] = "pinhole",
     covars: Optional[Tensor] = None,
+    params=None,
+    optimizers=None,
+    state=None,
+    force_no_gs_pruning=False,
+    tiles_total_cap=0,
 ) -> Tuple[Tensor, Tensor, Dict]:
     """Rasterize a set of 3D Gaussians (N) to a batch of image planes (C).
 
@@ -494,7 +499,8 @@ def rasterization(
     # Identify intersecting tiles
     tile_width = math.ceil(width / float(tile_size))
     tile_height = math.ceil(height / float(tile_size))
-    tiles_per_gauss, isect_ids, flatten_ids = isect_tiles(
+    # tiles_per_gauss, isect_ids, flatten_ids = isect_tiles(
+    isect_tiles_result = isect_tiles(
         means2d,
         radii,
         depths,
@@ -505,7 +511,15 @@ def rasterization(
         n_cameras=C,
         camera_ids=camera_ids,
         gaussian_ids=gaussian_ids,
+        params=params,
+        optimizers=optimizers,
+        state=state,
+        force_no_gs_pruning=force_no_gs_pruning,
+        tiles_total_cap=tiles_total_cap,
     )
+    if isect_tiles_result is None:
+        return
+    tiles_per_gauss, isect_ids, flatten_ids = isect_tiles_result
     # print("rank", world_rank, "Before isect_offset_encode")
     isect_offsets = isect_offset_encode(isect_ids, C, tile_width, tile_height)
 

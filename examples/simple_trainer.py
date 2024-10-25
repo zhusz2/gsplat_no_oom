@@ -1,6 +1,7 @@
 import os
 import sys
 sys.path.append(os.path.dirname(os.path.realpath(__file__)) + "/" + "../")
+# This is a quick implementation. An alternative way is to compile gsplat as the developer mode.
 
 import json
 import math
@@ -164,6 +165,9 @@ class Config:
     tb_every: int = 100
     # Save training images to tensorboard
     tb_save_image: bool = False
+
+    # tiles_total_cap
+    tiles_total_cap: int = 300_000_000  # this is good for an 24G GPU (such as 3090)
 
     lpips_net: Literal["vgg", "alex"] = "alex"
 
@@ -449,6 +453,7 @@ class Runner:
         Ks: Tensor,
         width: int,
         height: int,
+        force_no_gs_pruning,
         masks: Optional[Tensor] = None,
         **kwargs,
     ) -> Tuple[Tensor, Tensor, Dict]:
@@ -473,7 +478,8 @@ class Runner:
             colors = torch.cat([self.splats["sh0"], self.splats["shN"]], 1)  # [N, K, 3]
 
         rasterize_mode = "antialiased" if self.cfg.antialiased else "classic"
-        render_colors, render_alphas, info = rasterization(
+        # render_colors, render_alphas, info = rasterization(
+        rasterization_result = rasterization(
             means=means,
             quats=quats,
             scales=scales,
@@ -493,8 +499,16 @@ class Runner:
             rasterize_mode=rasterize_mode,
             distributed=self.world_size > 1,
             camera_model=self.cfg.camera_model,
+            params=self.splats,
+            optimizers=self.optimizers,
+            state=self.strategy_state,
+            force_no_gs_pruning=force_no_gs_pruning,
+            tiles_total_cap=self.cfg.tiles_total_cap,
             **kwargs,
         )
+        if rasterization_result is None:
+            return
+        render_colors, render_alphas, info = rasterization_result
         if masks is not None:
             render_colors[~masks] = 0
         return render_colors, render_alphas, info
@@ -593,18 +607,22 @@ class Runner:
             sh_degree_to_use = min(step // cfg.sh_degree_interval, cfg.sh_degree)
 
             # forward
-            renders, alphas, info = self.rasterize_splats(
-                camtoworlds=camtoworlds,
-                Ks=Ks,
-                width=width,
-                height=height,
-                sh_degree=sh_degree_to_use,
-                near_plane=cfg.near_plane,
-                far_plane=cfg.far_plane,
-                image_ids=image_ids,
-                render_mode="RGB+ED" if cfg.depth_loss else "RGB",
-                masks=masks,
-            )
+            rasterize_splats_result = None
+            while rasterize_splats_result is None:
+                rasterize_splats_result = self.rasterize_splats(
+                    camtoworlds=camtoworlds,
+                    Ks=Ks,
+                    width=width,
+                    height=height,
+                    sh_degree=sh_degree_to_use,
+                    near_plane=cfg.near_plane,
+                    far_plane=cfg.far_plane,
+                    image_ids=image_ids,
+                    render_mode="RGB+ED" if cfg.depth_loss else "RGB",
+                    force_no_gs_pruning=False,
+                    masks=masks,
+                )
+            renders, alphas, info = rasterize_splats_result
             if renders.shape[-1] == 4:
                 colors, depths = renders[..., 0:3], renders[..., 3:4]
             else:
@@ -856,6 +874,7 @@ class Runner:
                 sh_degree=cfg.sh_degree,
                 near_plane=cfg.near_plane,
                 far_plane=cfg.far_plane,
+                force_no_gs_pruning=True,
                 masks=masks,
             )  # [1, H, W, 3]
             torch.cuda.synchronize()
@@ -969,6 +988,7 @@ class Runner:
                 near_plane=cfg.near_plane,
                 far_plane=cfg.far_plane,
                 render_mode="RGB+ED",
+                force_no_gs_pruning=True,
             )  # [1, H, W, 4]
             colors = torch.clamp(renders[..., 0:3], 0.0, 1.0)  # [1, H, W, 3]
             depths = renders[..., 3:4]  # [1, H, W, 1]
@@ -1017,6 +1037,7 @@ class Runner:
             height=H,
             sh_degree=self.cfg.sh_degree,  # active all SH degrees
             radius_clip=3.0,  # skip GSs that have small image radius (in pixels)
+            force_no_gs_pruning=True,
         )  # [1, H, W, 3]
         return render_colors[0].cpu().numpy()
 

@@ -5,6 +5,8 @@ from typing_extensions import Literal
 import torch
 from torch import Tensor
 
+_remove_cached = None
+
 
 def _make_lazy_cuda_func(name: str) -> Callable:
     def call_cuda(*args, **kwargs):
@@ -352,6 +354,11 @@ def isect_tiles(
     n_cameras: Optional[int] = None,
     camera_ids: Optional[Tensor] = None,
     gaussian_ids: Optional[Tensor] = None,
+    params=None,
+    optimizers=None,
+    state=None,
+    force_no_gs_pruning=False,
+    tiles_total_cap=0,
 ) -> Tuple[Tensor, Tensor, Tensor]:
     """Maps projected Gaussians to intersecting tiles.
 
@@ -397,6 +404,82 @@ def isect_tiles(
         assert radii.shape == (C, N), radii.size()
         assert depths.shape == (C, N), depths.size()
 
+    global _remove_cached
+
+    tiles_per_gauss = torch.empty_like(depths.contiguous(), dtype=torch.int32)  # new memory
+    tiles_per_gauss = _make_lazy_cuda_func("isect_tiles_part1")(
+        means2d.contiguous(),
+        radii.contiguous(),
+        depths.contiguous(),
+        camera_ids,
+        gaussian_ids,
+        C,
+        tile_size,
+        tile_width,
+        tile_height,
+        sort,
+        True,  # DoubleBuffer: memory efficient radixsort
+        tiles_per_gauss,
+    )
+    # print("tile_per_gauss at the forwarading stage %d" % tiles_per_gauss.sum())
+    thre = tiles_total_cap
+    if (tiles_per_gauss.sum() > thre) and (not force_no_gs_pruning):  # exceeds some threshold
+        delta_to_delete = tiles_per_gauss.sum() - thre
+        assert len(tiles_per_gauss.shape) == 2
+        assert tiles_per_gauss.shape[0] == 1
+        tiles_per_gauss_sorted, indices = torch.sort(tiles_per_gauss[0], dim=0, descending=True)
+        cumsum_sorted = torch.cumsum(tiles_per_gauss_sorted, dim=0)
+        num_gs_to_prune = min(torch.searchsorted(cumsum_sorted, delta_to_delete) + 1, cumsum_sorted.shape[0])
+        assert indices.min() >= 0
+        mask = indices < 0  # an all False vector
+        mask[indices[:num_gs_to_prune]] = True
+        if _remove_cached is None:
+            from ..strategy.ops import remove
+            _remove_cached = remove
+        _remove_cached(params, optimizers, state, mask)
+        print("================================================================================")
+        print("gs pruning happened here to avoid oom!")
+        print("# of gs goes down from %d to %d, with the delta = %d" % (indices.shape[0], (mask == 0).sum(), mask.sum()))
+        print("the sum of tile_per_gauss goes down from %d to %d" % (cumsum_sorted[-1], cumsum_sorted[-1] - cumsum_sorted[num_gs_to_prune]))
+        print("================================================================================")
+        return
+
+    cum_tiles_per_gauss = torch.cumsum(tiles_per_gauss.view(-1), dim=0)  # new memory
+    n_isects = cum_tiles_per_gauss[-1]
+    isect_ids = torch.empty(n_isects, dtype=torch.int64, device=depths.device)  # new memory
+    flatten_ids = torch.empty(n_isects, dtype=torch.int32, device=depths.device)  # new memory
+    if n_isects > 0:
+        isect_ids, flatten_ids = _make_lazy_cuda_func("isect_tiles_part2")(
+            means2d.contiguous(),
+            radii.contiguous(),
+            depths.contiguous(),
+            camera_ids,
+            gaussian_ids,
+            C,
+            tile_size,
+            tile_width,
+            tile_height,
+            sort,
+            True,  # DoubleBuffer: memory efficient radixsort
+            cum_tiles_per_gauss,
+            isect_ids,
+            flatten_ids,
+        )
+        if sort:
+            isect_ids_sorted = torch.empty_like(isect_ids)  # new memory
+            flatten_ids_sorted = torch.empty_like(flatten_ids)  # new memory
+            isect_ids_sorted, flatten_ids_sorted = _make_lazy_cuda_func("isect_tiles_part3")(
+                isect_ids, flatten_ids,
+                C, tile_size, tile_width, tile_height, n_isects,
+                isect_ids_sorted, flatten_ids_sorted,
+            )
+            return tiles_per_gauss, isect_ids_sorted, flatten_ids_sorted
+        else:
+            return tiles_per_gauss, isect_ids, flatten_ids
+    else:
+        return tiles_per_gauss, isect_ids, flatten_ids
+
+    """
     tiles_per_gauss, isect_ids, flatten_ids = _make_lazy_cuda_func("isect_tiles")(
         means2d.contiguous(),
         radii.contiguous(),
@@ -411,6 +494,7 @@ def isect_tiles(
         True,  # DoubleBuffer: memory efficient radixsort
     )
     return tiles_per_gauss, isect_ids, flatten_ids
+    """
 
 
 @torch.no_grad()
