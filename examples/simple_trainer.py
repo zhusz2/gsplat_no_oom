@@ -1,6 +1,9 @@
+import os
+import sys
+sys.path.append(os.path.dirname(os.path.realpath(__file__)) + "/" + "../")
+
 import json
 import math
-import os
 import time
 from dataclasses import dataclass, field
 from collections import defaultdict
@@ -803,7 +806,7 @@ class Runner:
                 assert_never(self.cfg.strategy)
 
             # eval the full set
-            if step in [i - 1 for i in cfg.eval_steps]:
+            if step in [i - 1 for i in cfg.eval_steps] or step == 0:
                 self.eval(step)
                 self.render_traj(step)
 
@@ -910,7 +913,11 @@ class Runner:
         cfg = self.cfg
         device = self.device
 
-        camtoworlds_all = self.parser.camtoworlds[5:-5]
+        # camtoworlds_all = self.parser.camtoworlds[5:-5]
+        if self.parser.camtoworlds.shape[0] <= 10:
+            camtoworlds_all = self.parser.camtoworlds
+        else:
+            camtoworlds_all = self.parser.camtoworlds[5:-5]
         if cfg.render_traj_path == "interp":
             camtoworlds_all = generate_interpolated_path(
                 camtoworlds_all, 1
